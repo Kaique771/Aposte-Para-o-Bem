@@ -1,5 +1,6 @@
-/* Script do site Aposte para o Bem (APS 2026) */
+/* Script do site Aposte para o Bem (APS 2026) - Integrado ao Backend */
 
+const API_URL = "http://localhost:3000/api";
 const $ = (id) => document.getElementById(id);
 
 // Ações que aparecem em acoes.html
@@ -69,7 +70,7 @@ function ativar(seletor, botao) {
     .forEach((b) => b.classList.toggle("active", b === botao));
 }
 
-// Dados salvos no navegador (localStorage)
+// Sessão do usuário logado no navegador
 function ler(chave, padrao) {
   try {
     return JSON.parse(localStorage.getItem(chave)) ?? padrao;
@@ -94,54 +95,75 @@ function escapeHtml(texto) {
   );
 }
 
-// Doações
-function registrarDoacao(event) {
+// Doações (Envia para o Backend)
+async function registrarDoacao(event) {
   event.preventDefault();
   const usuario = getUsuarioLogado();
   const valor = parseFloat($("doacao-valor").value);
   const tipo = $("doacao-tipo").value;
+  const msg = $("doacao-msg").value.trim();
   if (!usuario || !(valor > 0)) return;
 
-  const doacoes = ler("doacoesONG_APS", []);
-  doacoes.unshift({
-    usuarioEmail: usuario.email,
-    valor,
-    tipo,
-    msg: $("doacao-msg").value.trim(),
-    data: new Date().toLocaleDateString("pt-BR"),
-  });
-  gravar("doacoesONG_APS", doacoes);
+  try {
+    const resposta = await fetch(`${API_URL}/doacoes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        usuarioEmail: usuario.email,
+        valor,
+        tipo,
+        msg,
+      }),
+    });
 
-  event.target.reset();
-  ativar(".valor-btn", null);
-  preencherDadosUsuario(usuario);
-  renderDoacoes();
-  mostrarAgradecimento(usuario.nome, valor, tipo);
+    if (!resposta.ok) {
+      const erroData = await resposta.json();
+      alert(erroData.erro || "Erro ao registrar doação.");
+      return;
+    }
+
+    event.target.reset();
+    ativar(".valor-btn", null);
+    preencherDadosUsuario(usuario);
+    await renderDoacoes();
+    mostrarAgradecimento(usuario.nome, valor, tipo);
+  } catch {
+    alert("Não foi possível conectar ao servidor backend.");
+  }
 }
 
-// Histórico com apenas as doações da conta logada
-function renderDoacoes() {
+// Histórico com apenas as doações da conta logada (Busca do Backend)
+async function renderDoacoes() {
   const usuario = getUsuarioLogado();
-  const doacoes = ler("doacoesONG_APS", []).filter(
-    (d) => d.usuarioEmail === usuario?.email,
-  );
-  $("totalDoado").textContent =
-    "Total: " +
-    formatarMoeda(doacoes.reduce((soma, d) => soma + Number(d.valor || 0), 0));
-  $("listaDoacoes").innerHTML = doacoes.length
-    ? doacoes
-        .map(
-          (d) => `
-    <div class="doacao-item">
-      <div><strong>${escapeHtml(d.tipo)}</strong><span class="doacao-data">${d.data}</span></div>
-      <div class="doacao-valor">${formatarMoeda(d.valor)}</div>
-    </div>`,
-        )
-        .join("")
-    : '<p class="vazio">Você ainda não fez nenhuma doação.</p>';
+  if (!usuario) return;
+
+  try {
+    const resposta = await fetch(
+      `${API_URL}/doacoes?email=${encodeURIComponent(usuario.email)}`,
+    );
+    const doacoes = await resposta.json();
+
+    $("totalDoado").textContent =
+      "Total: " +
+      formatarMoeda(doacoes.reduce((soma, d) => soma + Number(d.valor || 0), 0));
+    $("listaDoacoes").innerHTML = doacoes.length
+      ? doacoes
+          .map(
+            (d) => `
+      <div class="doacao-item">
+        <div><strong>${escapeHtml(d.tipo)}</strong><span class="doacao-data">${d.data}</span></div>
+        <div class="doacao-valor">${formatarMoeda(d.valor)}</div>
+      </div>`,
+          )
+          .join("")
+      : '<p class="vazio">Você ainda não fez nenhuma doação.</p>';
+  } catch {
+    $("listaDoacoes").innerHTML =
+      '<p class="vazio">Erro ao carregar histórico do servidor.</p>';
+  }
 }
 
-// Janela de agradecimento depois de doar. Fecha no botão, clicando fora ou com Esc
+// Janela de agradecimento depois de doar
 function mostrarAgradecimento(nome, valor, tipo) {
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay";
@@ -253,13 +275,10 @@ const cardPost = (p) => `
       <div class="post-card-rodape"><time datetime="${p.data}">${new Date(p.data + "T12:00:00").toLocaleDateString("pt-BR")}</time></div>
     </article>`;
 
-/* Cadastro e login
-   Isso é só uma simulação no navegador, serve para o trabalho.
-   Num site de verdade precisaria de servidor, banco de dados e
-   senha guardada com bcrypt ou argon2. */
+/* Cadastro e login integrados com o Backend */
 
 async function hashSenha(senha) {
-  if (!window.crypto?.subtle) return btoa(unescape(encodeURIComponent(senha))); // alternativa simples (apenas demonstração)
+  if (!window.crypto?.subtle) return btoa(unescape(encodeURIComponent(senha)));
   const buf = await crypto.subtle.digest(
     "SHA-256",
     new TextEncoder().encode(senha),
@@ -284,7 +303,6 @@ async function cadastrarUsuario(event) {
   const nome = $("cad-nome").value.trim();
   const email = $("cad-email").value.trim().toLowerCase();
   const senha = $("cad-senha").value;
-  const usuarios = ler("usuariosONG_APS", []);
 
   if (senha.length < 6)
     return mostrarMsg(
@@ -293,33 +311,48 @@ async function cadastrarUsuario(event) {
     );
   if (senha !== $("cad-senha2").value)
     return mostrarMsg("cadastroMsg", "As senhas não conferem.");
-  if (usuarios.some((u) => u.email === email))
-    return mostrarMsg(
-      "cadastroMsg",
-      "Este e-mail já está cadastrado. Tente entrar.",
-    );
 
-  usuarios.push({
-    nome,
-    email,
-    senhaHash: await hashSenha(senha),
-    criadoEm: new Date().toISOString(),
-  });
-  gravar("usuariosONG_APS", usuarios);
-  entrarNaConta(nome, email);
+  try {
+    const senhaHash = await hashSenha(senha);
+    const resposta = await fetch(`${API_URL}/usuarios`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ nome, email, senhaHash }),
+    });
+
+    const dados = await resposta.json();
+    if (!resposta.ok) {
+      return mostrarMsg("cadastroMsg", dados.erro || "Erro ao cadastrar.");
+    }
+
+    entrarNaConta(nome, email);
+  } catch {
+    mostrarMsg("cadastroMsg", "Erro de conexão com o servidor.");
+  }
 }
 
 async function entrarUsuario(event) {
   event.preventDefault();
   const email = $("login-email").value.trim().toLowerCase();
-  const usuario = ler("usuariosONG_APS", []).find((u) => u.email === email);
-  if (
-    !usuario ||
-    usuario.senhaHash !== (await hashSenha($("login-senha").value))
-  ) {
-    return mostrarMsg("loginMsg", "E-mail ou senha incorretos.");
+  const senha = $("login-senha").value;
+
+  try {
+    const senhaHash = await hashSenha(senha);
+    const resposta = await fetch(`${API_URL}/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, senhaHash }),
+    });
+
+    const dados = await resposta.json();
+    if (!resposta.ok) {
+      return mostrarMsg("loginMsg", dados.erro || "E-mail ou senha incorretos.");
+    }
+
+    entrarNaConta(dados.usuario.nome, dados.usuario.email);
+  } catch {
+    mostrarMsg("loginMsg", "Erro de conexão com o servidor.");
   }
-  entrarNaConta(usuario.nome, usuario.email);
 }
 
 function trocarAbaAuth(aba) {
@@ -389,11 +422,27 @@ document.addEventListener("DOMContentLoaded", () => {
     );
   }
 
-  // contato.html
-  $("contatoForm")?.addEventListener("submit", (e) => {
+  // contato.html (Envia para o Backend)
+  $("contatoForm")?.addEventListener("submit", async (e) => {
     e.preventDefault();
-    alert("Mensagem enviada. Obrigado pelo contato!");
-    e.target.reset();
+    const form = e.target;
+    const inputs = form.querySelectorAll("input, textarea");
+    const nome = inputs[0]?.value.trim();
+    const email = inputs[1]?.value.trim();
+    const mensagem = inputs[inputs.length - 1]?.value.trim();
+
+    try {
+      const resposta = await fetch(`${API_URL}/contato`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ nome, email, mensagem }),
+      });
+      const dados = await resposta.json();
+      alert(dados.mensagem || dados.erro);
+      if (resposta.ok) form.reset();
+    } catch {
+      alert("Erro ao conectar ao servidor.");
+    }
   });
 
   // Blog: lista (blog.html) e 3 destaques na home
